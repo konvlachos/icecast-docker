@@ -1,7 +1,7 @@
 # =========================================================
 # Builder stage
 # =========================================================
-FROM debian:trixie-slim@sha256:4bcb9db66237237d03b55b969271728dd3d955eaaa254b9db8a3db94550b1885 AS builder
+FROM debian:trixie-slim@sha256:77ba0164de17b88dd0bf6cdc8f65569e6e5fa6cd256562998b62553134a00ef0 AS builder
 ARG VERSION
 
 RUN <<'EOF'
@@ -13,7 +13,7 @@ apt-get install -y --no-install-recommends \
     automake \
     build-essential \
     ca-certificates \
-    git \
+    curl \
     libtool \
     make \
     pkg-config \
@@ -30,16 +30,18 @@ rm -rf /var/lib/apt/lists/*
 EOF
 
 # ---------------------------------------------------------
-# Build and install libigloo (Icecast dependency)
+# Build and install libigloo 0.9.5 (required for Icecast 2.5)
 # ---------------------------------------------------------
-RUN git clone https://gitlab.xiph.org/xiph/icecast-libigloo.git /tmp/igloo && \
-    cd /tmp/igloo && \
-    ./autogen.sh && \
+WORKDIR /tmp
+
+RUN curl -fsSL https://downloads.xiph.org/releases/igloo/libigloo-0.9.5.tar.gz \
+    | tar xz && \
+    cd libigloo-0.9.5 && \
     ./configure --prefix=/usr && \
     make -j$(nproc) && \
     make install && \
     ldconfig && \
-    rm -rf /tmp/igloo
+    rm -rf /tmp/libigloo-0.9.5
 
 # ---------------------------------------------------------
 # Build Icecast
@@ -65,7 +67,7 @@ RUN make install DESTDIR=/build/output
 # =========================================================
 # Runtime stage
 # =========================================================
-FROM debian:trixie-slim@sha256:4bcb9db66237237d03b55b969271728dd3d955eaaa254b9db8a3db94550b1885
+FROM debian:trixie-slim@sha256:77ba0164de17b88dd0bf6cdc8f65569e6e5fa6cd256562998b62553134a00ef0
 ARG VERSION
 
 RUN <<'EOF'
@@ -88,34 +90,34 @@ rm -rf /var/lib/apt/lists/*
 EOF
 
 # ---------------------------------------------------------
-# Create icecast user
+# Runtime user
 # ---------------------------------------------------------
 ENV USER=icecast
 RUN useradd --no-create-home $USER
 
 # ---------------------------------------------------------
-# Copy Icecast files
+# Entrypoint tools
 # ---------------------------------------------------------
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 COPY xml-edit.sh /usr/local/bin/xml-edit
 RUN chmod +x /usr/local/bin/docker-entrypoint /usr/local/bin/xml-edit
 
-# Icecast binaries and config
+# ---------------------------------------------------------
+# Icecast files
+# ---------------------------------------------------------
 COPY --from=builder /build/output /
 
-# ✅ FIX: copy libigloo runtime library
+# ✅ REQUIRED: libigloo runtime library
 COPY --from=builder /usr/lib/libigloo.so* /usr/lib/
 RUN ldconfig
 
-# ---------------------------------------------------------
-# Final setup
-# ---------------------------------------------------------
 RUN xml-edit errorlog - /etc/icecast.xml
 
 RUN mkdir -p /var/log/icecast && \
     chown $USER /etc/icecast.xml /var/log/icecast
 
 EXPOSE 8000
+
 USER $USER
 ENTRYPOINT ["docker-entrypoint"]
 CMD ["icecast", "-c", "/etc/icecast.xml"]
